@@ -1,5 +1,6 @@
-const CACHE_NAME = "fsd-chorale-shell-v1";
-const APP_SHELL = [
+const CACHE_NAME = "fsd-chorale-offline-v3";
+
+const LOCAL_SHELL = [
   "./",
   "./index.html",
   "./manifest.webmanifest",
@@ -8,41 +9,102 @@ const APP_SHELL = [
   "./social-preview.jpg"
 ];
 
+const FIREBASE_MODULES = [
+  "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js",
+  "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js",
+  "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js"
+];
+
 self.addEventListener("install", (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then((cache) => cache.addAll(APP_SHELL))
-      .then(() => self.skipWaiting())
-  );
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+
+    // Local files are required for the app shell.
+    await cache.addAll(LOCAL_SHELL);
+
+    // Try to store Firebase modules too. Failure of one remote file must
+    // not prevent the service worker from installing.
+    await Promise.allSettled(
+      FIREBASE_MODULES.map(async (url) => {
+        const response = await fetch(url, { mode: "cors" });
+        if (response.ok) await cache.put(url, response);
+      })
+    );
+
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(
-    caches.keys()
-      .then((keys) => Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
-      ))
-      .then(() => self.clients.claim())
-  );
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(
+      keys
+        .filter((key) => key !== CACHE_NAME)
+        .map((key) => caches.delete(key))
+    );
+    await self.clients.claim();
+  })());
 });
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
 
-  if (event.request.mode === "navigate") {
-    event.respondWith(
-      fetch(event.request).catch(() => caches.match("./index.html"))
-    );
+  const url = new URL(event.request.url);
+  const isFirebaseModule =
+    url.hostname === "www.gstatic.com" &&
+    url.pathname.includes("/firebasejs/12.17.1/");
+
+  // Firebase modules: cache-first so the JavaScript can start offline.
+  if (isFirebaseModule) {
+    event.respondWith((async () => {
+      const cached = await caches.match(event.request);
+      if (cached) return cached;
+
+      try {
+        const response = await fetch(event.request);
+        if (response && response.ok) {
+          const cache = await caches.open(CACHE_NAME);
+          await cache.put(event.request, response.clone());
+        }
+        return response;
+      } catch {
+        return new Response("", {
+          status: 503,
+          statusText: "Offline"
+        });
+      }
+    })());
     return;
   }
 
-  event.respondWith(
-    fetch(event.request)
-      .then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+  // Page navigation: newest page when online, saved page when offline.
+  if (event.request.mode === "navigate") {
+    event.respondWith((async () => {
+      try {
+        const response = await fetch(event.request);
+        const cache = await caches.open(CACHE_NAME);
+        await cache.put("./index.html", response.clone());
         return response;
-      })
-      .catch(() => caches.match(event.request))
-  );
+      } catch {
+        return (await caches.match("./index.html")) || (await caches.match("./"));
+      }
+    })());
+    return;
+  }
+
+  // Other same-origin assets: network-first, cache fallback.
+  event.respondWith((async () => {
+    try {
+      const response = await fetch(event.request);
+      if (response && response.ok && url.origin === self.location.origin) {
+        const cache = await caches.open(CACHE_NAME);
+        await cache.put(event.request, response.clone());
+      }
+      return response;
+    } catch {
+      return (await caches.match(event.request)) ||
+        new Response("", { status: 503, statusText: "Offline" });
+    }
+  })());
 });

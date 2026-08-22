@@ -773,6 +773,26 @@
 </head>
 
 <body>
+<div
+  id="connectionBanner"
+  role="status"
+  aria-live="polite"
+  style="
+    display:none;
+    position:sticky;
+    top:0;
+    z-index:9999;
+    padding:10px 14px;
+    text-align:center;
+    font-size:13px;
+    font-weight:800;
+    background:#fff2c7;
+    color:#5c4300;
+    border-bottom:1px solid rgba(92,67,0,.18);
+  "
+>
+  📵 Offline — showing saved schedules. Changes will sync when internet returns.
+</div>
 <div class="app">
 
   <header class="hero">
@@ -1220,11 +1240,15 @@
     browserLocalPersistence,
     createUserWithEmailAndPassword,
     signInWithEmailAndPassword,
-    signOut
+    signOut,
+    onAuthStateChanged
   } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
 
   import {
     getFirestore,
+    initializeFirestore,
+    persistentLocalCache,
+    persistentMultipleTabManager,
     collection,
     doc,
     setDoc,
@@ -1260,7 +1284,16 @@
   if (configured) {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
-    db = getFirestore(app);
+    try {
+      db = initializeFirestore(app, {
+        localCache: persistentLocalCache({
+          tabManager: persistentMultipleTabManager()
+        })
+      });
+    } catch (error) {
+      console.warn("Persistent Firestore cache unavailable; using normal Firestore:", error);
+      db = getFirestore(app);
+    }
 
     try {
       await setPersistence(auth, browserLocalPersistence);
@@ -1634,6 +1667,7 @@
         };
 
         state.role = "member";
+        saveCurrentSession();
         enterApp();
         showToast(`Welcome, ${name}!`);
         return;
@@ -1672,6 +1706,7 @@
       };
 
       state.role = "member";
+      saveCurrentSession();
       enterApp();
       showToast(`Welcome back, ${memberData.name}!`);
     } catch (error) {
@@ -1718,6 +1753,7 @@
       state.role = "admin";
       state.member = null;
       els.adminPasswordInput.value = "";
+      saveCurrentSession();
       enterApp();
     } catch (error) {
       console.error(error);
@@ -1727,12 +1763,18 @@
   }
 
   async function switchRole() {
+    if (!navigator.onLine) {
+      showToast("Connect to the internet before switching roles so you do not lose offline access.");
+      return;
+    }
+
     stopEventsListener();
 
     if (configured && auth.currentUser) {
       await signOut(auth);
     }
 
+    clearSavedSession();
     state.role = null;
     state.member = null;
     state.events = [];
@@ -1783,6 +1825,114 @@
     }
   }
 
+
+  const OFFLINE_EVENTS_KEY = "fsd-chorale-cached-schedules-v1";
+  const SAVED_SESSION_KEY = "fsd-chorale-saved-session-v1";
+
+  function cacheSchedules(events) {
+    try {
+      const safeEvents = (events || []).map((event) => {
+        const copy = { ...event };
+        // Firestore Timestamp objects are not needed to render the schedule list.
+        delete copy.createdAt;
+        delete copy.updatedAt;
+        return copy;
+      });
+      localStorage.setItem(OFFLINE_EVENTS_KEY, JSON.stringify(safeEvents));
+    } catch (error) {
+      console.warn("Could not cache schedules:", error);
+    }
+  }
+
+  function loadCachedSchedules() {
+    try {
+      const cached = JSON.parse(localStorage.getItem(OFFLINE_EVENTS_KEY) || "[]");
+      return Array.isArray(cached) ? cached : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function saveCurrentSession() {
+    try {
+      if (!state.role || !auth?.currentUser) return;
+
+      const session = {
+        role: state.role,
+        uid: auth.currentUser.uid,
+        email: (auth.currentUser.email || "").toLowerCase(),
+        member: state.member
+          ? {
+              id: state.member.id || auth.currentUser.uid,
+              name: state.member.name || "Member",
+              email: state.member.email || auth.currentUser.email || ""
+            }
+          : null
+      };
+
+      localStorage.setItem(SAVED_SESSION_KEY, JSON.stringify(session));
+    } catch (error) {
+      console.warn("Could not save session:", error);
+    }
+  }
+
+  function loadSavedSession() {
+    try {
+      return JSON.parse(localStorage.getItem(SAVED_SESSION_KEY) || "null");
+    } catch {
+      return null;
+    }
+  }
+
+  function clearSavedSession() {
+    try {
+      localStorage.removeItem(SAVED_SESSION_KEY);
+    } catch {}
+  }
+
+  function updateConnectionBanner() {
+    const banner = document.getElementById("connectionBanner");
+    if (!banner) return;
+
+    if (navigator.onLine) {
+      banner.style.display = "none";
+    } else {
+      banner.style.display = "block";
+      banner.textContent =
+        "📵 Offline — showing saved schedules. Changes will sync when internet returns.";
+    }
+  }
+
+  window.addEventListener("online", () => {
+    updateConnectionBanner();
+    showToast("Back online — syncing changes.");
+    if (state.role) startEventsListener();
+  });
+
+  window.addEventListener("offline", () => {
+    updateConnectionBanner();
+    showToast("You are offline. Saved schedules are still available.");
+  });
+
+  updateConnectionBanner();
+
+  function useCachedSchedulesIfNeeded() {
+    const cached = loadCachedSchedules();
+    if (!cached.length) return false;
+
+    state.events = cached;
+    state.events.sort((a, b) => {
+      const ak = `${a.date || ""}T${a.time || ""}`;
+      const bk = `${b.date || ""}T${b.time || ""}`;
+      return ak.localeCompare(bk);
+    });
+
+    renderStats();
+    renderCalendar();
+    renderEvents();
+    return true;
+  }
+
   function startEventsListener() {
     if (!configured || !db) return;
 
@@ -1798,6 +1948,8 @@
           return ak.localeCompare(bk);
         });
 
+        cacheSchedules(state.events);
+
         renderStats();
         renderCalendar();
         renderEvents();
@@ -1805,7 +1957,12 @@
       },
       (error) => {
         console.error(error);
-        showToast("Could not load schedules. Check Firestore rules.");
+
+        if (!navigator.onLine && useCachedSchedulesIfNeeded()) {
+          showToast("Offline — showing your saved schedules.");
+        } else {
+          showToast("Could not load schedules. Check Firestore rules.");
+        }
       }
     );
   }
@@ -2128,14 +2285,14 @@
     try {
       if (id) {
         await updateDoc(doc(db, "schedules", id), payload);
-        showToast("Schedule updated.");
+        showToast(navigator.onLine ? "Schedule updated." : "Schedule updated offline — it will sync later.");
       } else {
         await addDoc(collection(db, "schedules"), {
           ...payload,
           createdAt: serverTimestamp(),
           createdBy: auth.currentUser.uid
         });
-        showToast("Schedule added.");
+        showToast(navigator.onLine ? "Schedule added." : "Schedule added offline — it will sync later.");
       }
 
       closeEventEditor();
@@ -2155,7 +2312,7 @@
 
     try {
       await deleteDoc(doc(db, "schedules", id));
-      showToast("Schedule deleted.");
+      showToast(navigator.onLine ? "Schedule deleted." : "Schedule deletion saved offline — it will sync later.");
     } catch (error) {
       console.error(error);
       showToast("Could not delete schedule.");
@@ -2175,7 +2332,7 @@
         { merge: true }
       );
 
-      showToast("Your schedule check was recorded.");
+      showToast(navigator.onLine ? "Your schedule check was recorded." : "Check saved offline — it will sync later.");
     } catch (error) {
       console.error(error);
       showToast("Could not record your check.");
@@ -2204,7 +2361,7 @@
         { merge: true }
       );
 
-      showToast("Practice attendance recorded.");
+      showToast(navigator.onLine ? "Practice attendance recorded." : "Attendance saved offline — it will sync later.");
     } catch (error) {
       console.error(error);
       showToast("Could not record practice attendance.");
@@ -2238,7 +2395,7 @@
         { merge: true }
       );
 
-      showToast("Your vote was recorded.");
+      showToast(navigator.onLine ? "Your vote was recorded." : "Vote saved offline — it will sync later.");
     } catch (error) {
       console.error(error);
       showToast("Could not submit your vote.");
@@ -2470,6 +2627,7 @@
       );
 
       state.member.name = next.trim();
+      saveCurrentSession();
       renderRoleUI();
       showToast("Your name was updated.");
     } catch (error) {
@@ -2815,12 +2973,77 @@
     els.memberActivityOverlay.classList.add("hidden");
   });
 
+
+  async function restorePreviousSession() {
+    if (!configured || !auth) {
+      useCachedSchedulesIfNeeded();
+      return;
+    }
+
+    const saved = loadSavedSession();
+    if (!saved) {
+      if (!navigator.onLine) useCachedSchedulesIfNeeded();
+      return;
+    }
+
+    let finished = false;
+
+    let stopWatching = () => {};
+    stopWatching = onAuthStateChanged(auth, (user) => {
+      if (finished) return;
+      finished = true;
+      stopWatching();
+
+      if (!user) {
+        if (!navigator.onLine) {
+          useCachedSchedulesIfNeeded();
+          showToast("Saved schedules are available, but sign in online once to restore your account.");
+        }
+        return;
+      }
+
+      const email = (user.email || "").toLowerCase();
+
+      if (
+        saved.role === "admin" &&
+        email === ADMIN_EMAIL &&
+        saved.uid === user.uid
+      ) {
+        state.role = "admin";
+        state.member = null;
+        enterApp();
+        if (!navigator.onLine) showToast("Offline mode — Admin session restored.");
+        return;
+      }
+
+      if (
+        saved.role === "member" &&
+        saved.uid === user.uid &&
+        saved.member
+      ) {
+        state.role = "member";
+        state.member = {
+          id: user.uid,
+          name: saved.member.name || "Member",
+          email: saved.member.email || user.email || ""
+        };
+        enterApp();
+        if (!navigator.onLine) showToast(`Offline mode — welcome back, ${state.member.name}.`);
+        return;
+      }
+
+      clearSavedSession();
+    });
+  }
+
   /* Initial screen */
 
   renderRoleUI();
   renderStats();
   renderCalendar();
   renderEvents();
+  useCachedSchedulesIfNeeded();
+  restorePreviousSession();
 
   /*
   =====================================================================
