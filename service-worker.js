@@ -1,4 +1,4 @@
-const CACHE_NAME = "fsd-chorale-offline-v3";
+const CACHE_NAME = "fsd-chorale-offline-v4";
 
 const LOCAL_SHELL = [
   "./",
