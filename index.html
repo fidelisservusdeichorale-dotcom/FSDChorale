@@ -947,7 +947,7 @@
       type="button"
       style="width:100%;margin-top:14px"
     >
-      📲 Install App
+      ⬇️ Download App
     </button>
   </section>
 </div>
@@ -956,7 +956,7 @@
 <div id="installHelpOverlay" class="overlay hidden">
   <section class="welcome" style="max-width:460px">
     <div class="welcome-mark">📲</div>
-    <h2>Install Fidelis Chorale</h2>
+    <h2>Download / Install Fidelis Chorale</h2>
     <div id="installHelpText" style="text-align:left;line-height:1.6;margin:12px 0 18px"></div>
     <button id="closeInstallHelpBtn" class="btn btn-primary" type="button" style="width:100%">
       Got It
@@ -2850,19 +2850,20 @@
 
     if (isIOS()) {
       els.installHelpText.innerHTML = `
-        <strong>On iPhone/iPad:</strong><br>
+        <strong>iPhone/iPad requires one manual Apple step:</strong><br><br>
         1. Open this website in <strong>Safari</strong>.<br>
-        2. Tap the <strong>Share</strong> button (square with an arrow).<br>
-        3. Scroll down and tap <strong>Add to Home Screen</strong>.<br>
-        4. Tap <strong>Add</strong>.
+        2. Tap <strong>Share</strong> ⬆️.<br>
+        3. Tap <strong>Add to Home Screen</strong>.<br>
+        4. Tap <strong>Add</strong>.<br><br>
+        Safari does not allow websites to place themselves on the Home Screen automatically.
       `;
     } else {
       els.installHelpText.innerHTML = `
-        <strong>On Android:</strong><br>
-        1. Open this website in <strong>Chrome</strong>.<br>
-        2. Tap the <strong>⋮</strong> menu.<br>
-        3. Tap <strong>Install app</strong> or <strong>Add to Home screen</strong>.<br>
-        4. Confirm the installation.
+        <strong>Android:</strong><br><br>
+        If your browser supports direct installation, tapping <strong>Download App</strong>
+        opens the real install prompt automatically.<br><br>
+        If no prompt appears, open the browser menu and choose
+        <strong>Install app</strong> or <strong>Add to Home screen</strong>.
       `;
     }
 
@@ -2871,18 +2872,22 @@
 
   async function installAppSafely() {
     if (isInstalledApp()) {
-      showToast("The app is already installed.");
+      showToast("The app is already on your Home Screen.");
       return;
     }
 
+    // Supported Chromium browsers expose a real install prompt.
+    // A user tap is still required by the browser for security.
     if (deferredInstallPrompt) {
       try {
-        deferredInstallPrompt.prompt();
+        await deferredInstallPrompt.prompt();
         const result = await deferredInstallPrompt.userChoice;
         deferredInstallPrompt = null;
 
         if (result.outcome === "accepted") {
-          showToast("Installing app...");
+          showToast("Installing Fidelis Chorale...");
+        } else {
+          showToast("Installation was cancelled.");
         }
       } catch (error) {
         console.warn("Install prompt failed:", error);
@@ -2891,6 +2896,8 @@
       return;
     }
 
+    // iPhone/iPad Safari does not expose a programmatic Home Screen install API.
+    // Show the shortest possible instructions instead.
     showInstallHelp();
   }
 
@@ -2901,13 +2908,17 @@
 
   window.addEventListener("appinstalled", () => {
     deferredInstallPrompt = null;
-    if (els.installAppBtn) els.installAppBtn.classList.add("hidden");
+    if (els.installAppBtn) {
+      els.installAppBtn.textContent = "✓ App Installed";
+      els.installAppBtn.disabled = true;
+    }
     showToast("Fidelis Chorale was installed.");
   });
 
   if (els.installAppBtn) {
     if (isInstalledApp()) {
-      els.installAppBtn.classList.add("hidden");
+      els.installAppBtn.textContent = "✓ App Installed";
+      els.installAppBtn.disabled = true;
     } else {
       els.installAppBtn.addEventListener("click", installAppSafely);
     }
