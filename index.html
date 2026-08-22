@@ -1110,16 +1110,12 @@
           </label>
 
           <label>
-            Main Time
+            Time
             <input id="eventTime" type="time" />
           </label>
         </div>
 
         <div style="margin-top:2px">
-          <div style="font-size:12px;font-weight:850;margin-bottom:7px">
-            Other Times on the Same Day
-          </div>
-
           <div id="additionalTimesEditor"></div>
 
           <button
@@ -1132,11 +1128,11 @@
           </button>
 
           <div style="font-size:11px;opacity:.72;margin-top:6px">
-            Use this when the same schedule happens more than once on the selected date.
+            Add another time if the same schedule happens again on this date.
           </div>
         </div>
 
-        <label>
+        <label id="eventDeadlineWrap" class="hidden">
           Deadline
           <input id="eventDeadline" type="datetime-local" />
         </label>
@@ -1405,6 +1401,7 @@
     eventTime: $("eventTime"),
     additionalTimesEditor: $("additionalTimesEditor"),
     addEventTimeBtn: $("addEventTimeBtn"),
+    eventDeadlineWrap: $("eventDeadlineWrap"),
     eventDeadline: $("eventDeadline"),
     eventNotes: $("eventNotes"),
     eventHasPoll: $("eventHasPoll"),
@@ -2249,17 +2246,21 @@
     row.style.marginTop = "7px";
 
     row.innerHTML = `
-      <input
-        class="additional-time-input"
-        type="time"
-        value="${escapeHTML(value)}"
-        aria-label="Additional schedule time"
-      />
+      <label style="margin:0">
+        Time
+        <input
+          class="additional-time-input"
+          type="time"
+          value="${escapeHTML(value)}"
+          aria-label="Time"
+        />
+      </label>
       <button
         type="button"
         class="btn btn-light btn-small"
         title="Remove this time"
         aria-label="Remove this time"
+        style="margin-top:22px"
       >
         ×
       </button>
@@ -2278,13 +2279,15 @@
     els.eventTitle.value = event?.title || "";
     els.otherPurpose.value = event?.otherPurpose || "";
     toggleOtherPurpose();
+    toggleDeadlineField();
     els.eventDate.value = event?.date || forcedDate || state.selectedDate || todayKey();
 
     const existingTimes = normalizeEventTimes(event);
     els.eventTime.value = existingTimes[0] || "";
     renderAdditionalTimeEditors(existingTimes.slice(1));
 
-    els.eventDeadline.value = event?.deadline || "";
+    els.eventDeadline.value =
+      els.eventType.value === "home" ? (event?.deadline || "") : "";
     els.eventNotes.value = event?.notes || "";
     els.eventHasPoll.checked = Boolean(event?.hasPoll);
     els.pollQuestion.value = event?.pollQuestion || "";
@@ -2329,6 +2332,16 @@
 
     if (!isOther) {
       els.otherPurpose.value = "";
+    }
+  }
+
+  function toggleDeadlineField() {
+    const isHomePractice = els.eventType.value === "home";
+
+    els.eventDeadlineWrap.classList.toggle("hidden", !isHomePractice);
+
+    if (!isHomePractice) {
+      els.eventDeadline.value = "";
     }
   }
 
@@ -2384,7 +2397,10 @@
       date,
       time: times[0] || "",
       times,
-      deadline: els.eventDeadline.value,
+      deadline:
+        els.eventType.value === "home"
+          ? els.eventDeadline.value
+          : "",
       notes: els.eventNotes.value.trim(),
       hasPoll: els.eventHasPoll.checked,
       pollQuestion: els.eventHasPoll.checked ? els.pollQuestion.value.trim() : "",
@@ -3047,7 +3063,10 @@
   els.closeEventModal.addEventListener("click", closeEventEditor);
   els.cancelEvent.addEventListener("click", closeEventEditor);
 
-  els.eventType.addEventListener("change", toggleOtherPurpose);
+  els.eventType.addEventListener("change", () => {
+    toggleOtherPurpose();
+    toggleDeadlineField();
+  });
   els.eventHasPoll.addEventListener("change", togglePollEditor);
   els.addPollOption.addEventListener("click", () => addPollOptionEditor(""));
 
